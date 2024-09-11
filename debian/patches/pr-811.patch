@@ -1,0 +1,246 @@
+From 6622d350895a3f62742ed5662bb4234d0d32b085 Mon Sep 17 00:00:00 2001
+From: Will Miller <will.miller@pexip.com>
+Date: Wed, 11 Sep 2024 12:20:09 +0100
+Subject: [PATCH] feat(clients): allow non-dev API endpoint roots
+
+Specifying an API endpoint root to a client used to imply that the
+endpoint in use was for dev, which would disable TLS and token bearer
+authorisation. This is not always a valid assumption, for example when
+manually specifying a locational endpoint for Google PubSub to target a
+specific region, as such endpoints are for production and should
+therefore use TLS and authorisation.
+
+Fix this by allowing manual configuration of the `api_is_dev` setting
+when using a non-dev root, whilst maintaining the old behaviour by
+default for backwards compatibility.
+---
+ gcloud/aio/pubsub/publisher_client.py  | 13 ++--
+ gcloud/aio/pubsub/subscriber_client.py | 13 ++--
+ tests/unit/publisher_test.py           | 63 +++++++++++++++++++
+ tests/unit/subscriber_test.py          | 63 ++++++++++++++++++-
+ 30 files changed, 547 insertions(+), 137 deletions(-)
+ create mode 100644 tests/unit/publisher_test.py
+
+diff --git a/gcloud/aio/pubsub/publisher_client.py b/gcloud/aio/pubsub/publisher_client.py
+index 0170cc87e..43aacc0f1 100644
+--- a/gcloud/aio/pubsub/publisher_client.py
++++ b/gcloud/aio/pubsub/publisher_client.py
+@@ -30,9 +30,14 @@
+ log = logging.getLogger(__name__)
+ 
+ 
+-def init_api_root(api_root: Optional[str]) -> Tuple[bool, str]:
++def init_api_root(
++        api_root: Optional[str], api_is_dev: Optional[bool],
++) -> Tuple[bool, str]:
+     if api_root:
+-        return True, api_root
++        if api_is_dev is None:
++            # Assume a provided API root is dev unless otherwise specified
++            api_is_dev = True
++        return api_is_dev, api_root
+ 
+     host = os.environ.get('PUBSUB_EMULATOR_HOST')
+     if host:
+@@ -49,9 +54,9 @@ class PublisherClient:
+     def __init__(
+             self, *, service_file: Optional[Union[str, IO[AnyStr]]] = None,
+             session: Optional[Session] = None, token: Optional[Token] = None,
+-            api_root: Optional[str] = None,
++            api_root: Optional[str] = None, api_is_dev: Optional[bool] = None,
+     ) -> None:
+-        self._api_is_dev, self._api_root = init_api_root(api_root)
++        self._api_is_dev, self._api_root = init_api_root(api_root, api_is_dev)
+ 
+         self.session = AioSession(session, verify_ssl=not self._api_is_dev)
+         self.token = token or Token(
+diff --git a/gcloud/aio/pubsub/subscriber_client.py b/gcloud/aio/pubsub/subscriber_client.py
+index 047414039..429137594 100644
+--- a/gcloud/aio/pubsub/subscriber_client.py
++++ b/gcloud/aio/pubsub/subscriber_client.py
+@@ -26,9 +26,14 @@
+ ]
+ 
+ 
+-def init_api_root(api_root: Optional[str]) -> Tuple[bool, str]:
++def init_api_root(
++        api_root: Optional[str], api_is_dev: Optional[bool],
++) -> Tuple[bool, str]:
+     if api_root:
+-        return True, api_root
++        if api_is_dev is None:
++            # Assume a provided API root is dev unless otherwise specified
++            api_is_dev = True
++        return api_is_dev, api_root
+ 
+     host = os.environ.get('PUBSUB_EMULATOR_HOST')
+     if host:
+@@ -44,9 +49,9 @@ class SubscriberClient:
+     def __init__(
+             self, *, service_file: Optional[Union[str, IO[AnyStr]]] = None,
+             token: Optional[Token] = None, session: Optional[Session] = None,
+-            api_root: Optional[str] = None,
++            api_root: Optional[str] = None, api_is_dev: Optional[bool] = None,
+     ) -> None:
+-        self._api_is_dev, self._api_root = init_api_root(api_root)
++        self._api_is_dev, self._api_root = init_api_root(api_root, api_is_dev)
+ 
+         self.session = AioSession(session, verify_ssl=not self._api_is_dev)
+         self.token = token or Token(
+diff --git a/tests/unit/publisher_test.py b/tests/unit/publisher_test.py
+new file mode 100644
+index 000000000..80e71cff0
+--- /dev/null
++++ b/tests/unit/publisher_test.py
+@@ -0,0 +1,63 @@
++from typing import Optional
++from unittest.mock import AsyncMock
++from unittest.mock import patch
++
++import pytest
++from gcloud.aio.pubsub import PublisherClient
++
++# =========
++# client
++# =========
++
++
++class _MockToken:
++    @staticmethod
++    async def get() -> Optional[str]:
++        return 'Unit-Test-Bearer-Token'
++
++
++@pytest.mark.asyncio
++async def test_client_api_is_dev():
++    """
++    Test that the api_is_dev constructor parameter controls whether the
++    Authorization header is set on requests
++    """
++    async def _make_request(client_obj: PublisherClient,
++                            should_have_auth_header: bool) -> None:
++        with patch.object(
++                client_obj.session, 'put', return_value=AsyncMock(),
++        ) as mock_req:
++            async with client_obj as client:
++                await client.create_topic('foobar')
++        assert mock_req.call_count == 1
++        assert (
++            'Authorization' in mock_req.mock_calls[0].kwargs['headers']
++        ) == should_have_auth_header
++
++    api_root = 'https://foobar/v1'
++
++    # With no API root specified, assume API not dev, so auth header should be
++    # set
++    await _make_request(
++        PublisherClient(token=_MockToken()), should_have_auth_header=True,
++    )
++    # If API root set and not otherwise specified, assume API is dev, so auth
++    # header should not be set
++    await _make_request(
++        PublisherClient(api_root=api_root, token=_MockToken()),
++        should_have_auth_header=False,
++    )
++    # If API specified to be dev, auth header should not be set
++    await _make_request(
++        PublisherClient(api_root=api_root, api_is_dev=True,
++                        token=_MockToken()),
++        should_have_auth_header=False,
++    )
++    # If API specified to not be dev, auth header should be set
++    await _make_request(
++        PublisherClient(
++            api_root=api_root,
++            api_is_dev=False,
++            token=_MockToken()),
++        should_have_auth_header=True,
++    )
+diff --git a/tests/unit/subscriber_test.py b/tests/unit/subscriber_test.py
+index 707cde48d..11d60f7bd 100644
+--- a/tests/unit/subscriber_test.py
++++ b/tests/unit/subscriber_test.py
+@@ -1,5 +1,8 @@
+ # pylint: disable=redefined-outer-name
+-from gcloud.aio.auth import BUILD_GCLOUD_REST
++# pylint: disable=too-many-lines
++from typing import Optional
++
++from gcloud.aio.auth import BUILD_GCLOUD_REST  # pylint:disable=no-name-in-module
+ 
+ # pylint: disable=too-complex
+ if BUILD_GCLOUD_REST:
+@@ -9,12 +12,13 @@
+     import asyncio
+     import time
+     import logging
+-    from unittest.mock import call
++    from unittest.mock import call, AsyncMock
+     from unittest.mock import MagicMock
+     from unittest.mock import patch
+ 
+     import pytest
+ 
++    from gcloud.aio.pubsub import SubscriberClient
+     from gcloud.aio.pubsub.subscriber import AckDeadlineCache
+     from gcloud.aio.pubsub.subscriber import acker
+     from gcloud.aio.pubsub.subscriber import consumer
+@@ -944,3 +948,58 @@ async def test_subscribe_integrates_whole_chain(
+         # verify that the subscriber shuts down gracefully
+         with pytest.raises(asyncio.CancelledError):
+             await asyncio.wait_for(subscribe_task, 1)
++
++    # =========
++    # client
++    # =========
++
++    class _MockToken:
++        @staticmethod
++        async def get() -> Optional[str]:
++            return 'Unit-Test-Bearer-Token'
++
++    @pytest.mark.asyncio
++    async def test_client_api_is_dev():
++        """
++        Test that the api_is_dev constructor parameter controls whether the
++        Authorization header is set on requests
++        """
++        async def _make_request(client_obj: SubscriberClient,
++                                should_have_auth_header: bool) -> None:
++            with patch.object(
++                    client_obj.session, 'get', return_value=AsyncMock(),
++            ) as mock_req:
++                async with client_obj as client:
++                    await client.get_subscription('foobar')
++            assert mock_req.call_count == 1
++            assert (
++                'Authorization' in mock_req.mock_calls[0].kwargs['headers']
++            ) == should_have_auth_header
++
++        api_root = 'https://foobar/v1'
++
++        # With no API root specified, assume API not dev, so auth header should
++        # be set
++        await _make_request(
++            SubscriberClient(token=_MockToken()), should_have_auth_header=True,
++        )
++        # If API root set and not otherwise specified, assume API is dev, so
++        # auth header should not be set
++        await _make_request(
++            SubscriberClient(api_root=api_root, token=_MockToken()),
++            should_have_auth_header=False,
++        )
++        # If API specified to be dev, auth header should not be set
++        await _make_request(
++            SubscriberClient(
++                api_root=api_root, api_is_dev=True, token=_MockToken(),
++            ),
++            should_have_auth_header=False,
++        )
++        # If API specified to not be dev, auth header should be set
++        await _make_request(
++            SubscriberClient(
++                api_root=api_root, api_is_dev=False, token=_MockToken(),
++            ),
++            should_have_auth_header=True,
++        )
