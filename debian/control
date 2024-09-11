@@ -1,0 +1,32 @@
+Source: python-gcloud-aio-pubsub
+Section: python
+Priority: optional
+Maintainer: Pexip AS <packaging@pexip.com>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-poetry-core,
+ python3-gcloud-aio-auth,
+ python3-prometheus-client,
+ python3-aiohttp,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-mock,
+Standards-Version: 4.6.2
+Homepage: https://github.com/talkiq/gcloud-aio
+Vcs-Browser: https://github.com/pexip/os-python-gcloud-aio-pubsub
+Vcs-Git: https://github.com/pexip/os-python-gcloud-aio-pubsub.git
+
+Package: python3-gcloud-aio-pubsub
+Architecture: all
+Depends:
+ ${python3:Depends},
+ ${misc:Depends},
+Suggests:
+ python-python-gcloud-aio-pubsub-doc,
+Description: (Asyncio OR Threadsafe) Python Client for Google Cloud Pub/Sub
+ This library implements various methods for working with the Google Pubsub
+ APIs.

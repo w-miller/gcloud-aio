@@ -1,0 +1,20 @@
+#!/bin/bash
+
+
+parent_dir=$(dirname $(dirname $(dirname $(realpath $0))))
+
+if [ -z "$1" ]; then
+    echo "$0: <TAG>"
+    exit 1
+fi
+tag=$1
+out_file="${parent_dir}/python-gcloud-aio-pubsub_${tag}.orig.tar.gz"
+
+tmp_dir=$(mktemp -d)
+function cleanup() {
+    rm -rf "${tmp_dir}"
+}
+trap cleanup EXIT
+git clone https://github.com/talkiq/gcloud-aio.git "${tmp_dir}"
+git -C "${tmp_dir}" archive --format tgz --output "${out_file}" "pubsub-${tag}:pubsub"
+echo "I: Created source tarball: ${out_file}"
