@@ -538,7 +538,7 @@ else:
         except asyncio.CancelledError:
             log.debug('subscriber exited')
         except Exception:
-            log.exception('subscriber exited due to error')
+            log.info('subscriber exited due to error', exc_info=True)
 
         for task in producer_tasks:
             task.cancel()
